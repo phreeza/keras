@@ -11,8 +11,8 @@ python:
   - "3.4"
 # command to install dependencies
 install:
-  - conda install --yes python=$TRAVIS_PYTHON_VERSION numpy scipy matplotlib pandas pytest h5py
-  # Coverage packages are on my binstar channel
+  - conda install --yes python=$TRAVIS_PYTHON_VERSION numpy scipy matplotlib pandas pytest pytest-cov h5py
+  - pip install coveralls
   - python setup.py install
 # command to run tests
-script: py.test tests/
+script: py.test --cov-report term-missing --cov keras tests
