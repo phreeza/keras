@@ -14,9 +14,8 @@ python:
 install:
   - conda install --yes python=$TRAVIS_PYTHON_VERSION numpy scipy matplotlib pandas pytest h5py theano
   - pip install pytest-cov python-coveralls
-  - python setup.py install
 # command to run tests
 script:
-  - py.test -v --cov-report term-missing --cov keras tests/
-after_script:
+  - PYTHONPATH=$PWD:$PYTHONPATH py.test -v --cov-report term-missing --cov keras tests/
+after_success:
   - coveralls
