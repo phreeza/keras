@@ -168,7 +168,8 @@ class Graph(Layer):
         self.inputs[name] = layer
         self.input_config.append({'name': name, 'ndim': ndim, 'dtype': dtype})
 
-    def add_node(self, layer, name, input=None, inputs=[], merge_mode='concat', create_output=False):
+    def add_node(self, layer, name, input=None, inputs=[],
+                 merge_mode='concat', concat_axis=-1, create_output=False):
         if hasattr(layer, 'set_name'):
             layer.set_name(name)
         if name in self.namespace:
@@ -189,7 +190,7 @@ class Graph(Layer):
                     to_merge.append(self.inputs[n])
                 else:
                     raise Exception('Unknown identifier: ' + n)
-            merge = Merge(to_merge, mode=merge_mode)
+            merge = Merge(to_merge, mode=merge_mode, concat_axis=concat_axis)
             layer.set_previous(merge)
 
         self.namespace.add(name)
@@ -197,7 +198,9 @@ class Graph(Layer):
         self.node_config.append({'name': name,
                                  'input': input,
                                  'inputs': inputs,
-                                 'merge_mode': merge_mode})
+                                 'merge_mode': merge_mode,
+                                 'concat_axis': concat_axis,
+                                 'create_output': create_output})
         layer.init_updates()
         params, regularizers, constraints, updates = layer.get_params()
         self.params += params
@@ -208,7 +211,8 @@ class Graph(Layer):
         if create_output:
             self.add_output(name, input=name)
 
-    def add_output(self, name, input=None, inputs=[], merge_mode='concat'):
+    def add_output(self, name, input=None, inputs=[],
+                   merge_mode='concat', concat_axis=-1):
         if name in self.output_order:
             raise Exception('Duplicate output identifier: ' + name)
         if input:
@@ -224,14 +228,15 @@ class Graph(Layer):
                 if n not in self.nodes:
                     raise Exception('Unknown identifier: ' + n)
                 to_merge.append(self.nodes[n])
-            merge = Merge(to_merge, mode=merge_mode)
+            merge = Merge(to_merge, mode=merge_mode, concat_axis=concat_axis)
             self.outputs[name] = merge
 
         self.output_order.append(name)
         self.output_config.append({'name': name,
                                    'input': input,
                                    'inputs': inputs,
-                                   'merge_mode': merge_mode})
+                                   'merge_mode': merge_mode,
+                                   'concat_axis': concat_axis})
 
     def get_config(self):
         return {"name": self.__class__.__name__,
