@@ -75,7 +75,7 @@ class Embedding(Layer):
                   "input_dim": self.input_dim,
                   "output_dim": self.output_dim,
                   "init": self.init.__name__,
-                  "max_lenght": self.max_lenght,
+                  "input_length": self.input_length,
                   "mask_zero": self.mask_zero,
                   "activity_regularizer": self.activity_regularizer.get_config() if self.activity_regularizer else None,
                   "W_regularizer": self.W_regularizer.get_config() if self.W_regularizer else None,
@@ -88,7 +88,7 @@ class WordContextProduct(Layer):
     '''
         This layer turns a pair of words (a pivot word + a context word,
         ie. a word from the same context, or a random, out-of-context word),
-        indentified by their index in a vocabulary, into two dense reprensentations
+        identified by their index in a vocabulary, into two dense representations
         (word representation and context representation).
 
         Then it returns activation(dot(pivot_embedding, context_embedding)),
@@ -105,7 +105,7 @@ class WordContextProduct(Layer):
         input_dim is the size of the vocabulary.
 
         For more context, see Mikolov et al.:
-            Efficient Estimation of Word reprensentations in Vector Space
+            Efficient Estimation of Word representations in Vector Space
             http://arxiv.org/pdf/1301.3781v3.pdf
     '''
     input_ndim = 2

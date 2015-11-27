@@ -54,6 +54,22 @@ class PReLU(MaskedLayer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
+class ELU(MaskedLayer):
+    def __init__(self, alpha=1.0, **kwargs):
+        super(ELU, self).__init__(**kwargs)
+        self.alpha = alpha
+
+    def get_output(self, train):
+        X = self.get_input(train)
+        return ((X + abs(X)) / 2.0) + self.alpha * (T.exp((X - abs(X)) / 2.0) - 1)
+
+    def get_config(self):
+        config = {"name": self.__class__.__name__,
+                  "alpha": self.alpha}
+        base_config = super(ELU, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
 class ParametricSoftplus(MaskedLayer):
     '''
         Parametric Softplus of the form: alpha * log(1 + exp(beta * X))
@@ -74,7 +90,6 @@ class ParametricSoftplus(MaskedLayer):
         self.alphas = sharedX(self.alpha_init * np.ones(input_shape))
         self.betas = sharedX(self.beta_init * np.ones(input_shape))
         self.params = [self.alphas, self.betas]
-        self.input_shape = input_shape
 
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)

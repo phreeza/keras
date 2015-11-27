@@ -16,13 +16,19 @@ from ..regularizers import ActivityRegularizer, Regularizer
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from six.moves import zip
 
+import marshal
+import types
+import sys
+
 
 class Layer(object):
     def __init__(self, **kwargs):
         for kwarg in kwargs:
-            assert kwarg in {'input_shape'}, "Keyword argument not understood: " + kwarg
+            assert kwarg in {'input_shape', 'trainable'}, "Keyword argument not understood: " + kwarg
         if 'input_shape' in kwargs:
             self.set_input_shape(kwargs['input_shape'])
+        if 'trainable' in kwargs:
+            self._trainable = kwargs['trainable']
         if not hasattr(self, 'params'):
             self.params = []
 
@@ -44,6 +50,17 @@ class Layer(object):
         Must be implemented on all layers that have weights.
         '''
         pass
+
+    @property
+    def trainable(self):
+        if hasattr(self, '_trainable'):
+            return self._trainable
+        else:
+            return True
+
+    @trainable.setter
+    def trainable(self, value):
+        self._trainable = value
 
     @property
     def nb_input(self):
@@ -133,6 +150,8 @@ class Layer(object):
         config = {"name": self.__class__.__name__}
         if hasattr(self, '_input_shape'):
             config['input_shape'] = self._input_shape[1:]
+        if hasattr(self, '_trainable'):
+            config['trainable'] = self._trainable
         return config
 
     def get_params(self):
@@ -242,10 +261,11 @@ class TimeDistributedMerge(Layer):
 
     def get_output(self, train=False):
         X = self.get_input(train)
-        if self.mode == 'sum' or self.mode == 'ave':
+        if self.mode == 'ave':
+            s = theano.tensor.mean(X, axis=1)
+            return s
+        if self.mode == 'sum':
             s = theano.tensor.sum(X, axis=1)
-            if self.mode == 'ave':
-                s /= X.shape[1]
             return s
         elif self.mode == 'mul':
             s = theano.tensor.mul(X, axis=1)
@@ -261,16 +281,60 @@ class TimeDistributedMerge(Layer):
 
 
 class Merge(Layer):
-    def __init__(self, layers, mode='sum', concat_axis=-1):
+    def __init__(self, layers, mode='sum', concat_axis=-1, dot_axes=-1):
         ''' Merge the output of a list of layers or containers into a single tensor.
-            mode: {'sum', 'mul', 'concat', 'ave'}
+            mode: {'sum', 'mul', 'concat', 'ave', 'join'}
         '''
         if len(layers) < 2:
             raise Exception("Please specify two or more input layers (or containers) to merge")
-        if mode not in {'sum', 'mul', 'concat', 'ave'}:
+
+        if mode not in {'sum', 'mul', 'concat', 'ave', 'join', 'cos', 'dot'}:
             raise Exception("Invalid merge mode: " + str(mode))
+
+        if mode in {'sum', 'mul', 'ave', 'cos'}:
+            input_shapes = set([l.output_shape for l in layers])
+            if len(input_shapes) > 1:
+                raise Exception("Only layers of same output shape can be merged using " + mode + " mode. " +
+                                "Layer shapes: %s" % ([l.output_shape for l in layers]))
+        if mode in {'cos', 'dot'}:
+            if len(layers) > 2:
+                raise Exception(mode + " merge takes exactly 2 layers")
+            shape1 = layers[0].output_shape
+            shape2 = layers[1].output_shape
+            n1 = len(shape1)
+            n2 = len(shape2)
+            if mode == 'dot':
+                if type(dot_axes) == int:
+                    if dot_axes < 0:
+                        dot_axes = [range(dot_axes % n1, n1), range(dot_axes % n2, n2)]
+                    else:
+                        dot_axes = [range(n1 - dot_axes, n2), range(1, dot_axes + 1)]
+                if type(dot_axes) not in [list, tuple]:
+                    raise Exception("Invalid type for dot_axes - should be a list.")
+                if len(dot_axes) != 2:
+                    raise Exception("Invalid format for dot_axes - should contain two elements.")
+                if type(dot_axes[0]) not in [list, tuple, range] or type(dot_axes[1]) not in [list, tuple, range]:
+                    raise Exception("Invalid format for dot_axes - list elements should have type 'list' or 'tuple'.")
+                for i in range(len(dot_axes[0])):
+                    if shape1[dot_axes[0][i]] != shape2[dot_axes[1][i]]:
+                        raise Exception("Dimension incompatibility using dot mode: " +
+                                        "%s != %s. " % (shape1[dot_axes[0][i]], shape2[dot_axes[1][i]]) +
+                                        "Layer shapes: %s, %s" % (shape1, shape2))
+        elif mode == 'concat':
+            input_shapes = set()
+            for l in layers:
+                oshape = list(l.output_shape)
+                oshape.pop(concat_axis)
+                oshape = tuple(oshape)
+                input_shapes.add(oshape)
+            if len(input_shapes) > 1:
+                raise Exception("'concat' mode can only merge layers with matching " +
+                                "output shapes except for the concat axis. " +
+                                "Layer shapes: %s" % ([l.output_shape for l in layers]))
+
         self.mode = mode
         self.concat_axis = concat_axis
+        self.dot_axes = dot_axes
         self.layers = layers
         self.params = []
         self.regularizers = []
@@ -296,6 +360,24 @@ class Merge(Layer):
             for shape in input_shapes[1:]:
                 output_shape[self.concat_axis] += shape[self.concat_axis]
             return tuple(output_shape)
+        elif self.mode == 'join':
+            return None
+        elif self.mode == 'dot':
+            shape1 = list(input_shapes[0])
+            shape2 = list(input_shapes[1])
+            dot_axes = []
+            for axes in self.dot_axes:
+                dot_axes.append([index-1 for index in axes])
+            tensordot_output = np.tensordot(np.zeros(tuple(shape1[1:])),
+                                            np.zeros(tuple(shape2[1:])),
+                                            axes=dot_axes)
+            if len(tensordot_output.shape) == 0:
+                shape = (1,)
+            else:
+                shape = tensordot_output.shape
+            return (shape1[0],) + shape
+        elif self.mode == 'cos':
+            return tuple(input_shapes[0][0], 1)
 
     def get_params(self):
         return self.params, self.regularizers, self.constraints, self.updates
@@ -318,13 +400,28 @@ class Merge(Layer):
                 if X.name is None:
                     raise ValueError("merge_mode='join' only works with named inputs")
                 else:
-                    inputs[X.name] = self.layers[i].get_output(train)
+                    inputs[X.name] = X
             return inputs
         elif self.mode == 'mul':
             s = self.layers[0].get_output(train)
             for i in range(1, len(self.layers)):
                 s *= self.layers[i].get_output(train)
             return s
+        elif self.mode == 'dot':
+            l1 = self.layers[0].get_output(train)
+            l2 = self.layers[1].get_output(train)
+            output = T.batched_tensordot(l1, l2, self.dot_axes)
+            output_shape = list(self.output_shape)
+            output_shape[0] = l1.shape[0]
+            output = output.reshape(tuple(output_shape))
+            return output
+        elif self.mode == 'cos':
+            l1 = self.layers[0].get_output(train)
+            l2 = self.layers[1].get_output(train)
+            output, _ = theano.scan(lambda v1, v2: T.dot(v1, v2) / T.sqrt(T.dot(v1, v1) * T.dot(v2, v2)),
+                                    sequences=[l1, l2],
+                                    outputs_info=None)
+            return output
         else:
             raise Exception('Unknown merge mode')
 
@@ -365,7 +462,8 @@ class Merge(Layer):
         config = {"name": self.__class__.__name__,
                   "layers": [l.get_config() for l in self.layers],
                   "mode": self.mode,
-                  "concat_axis": self.concat_axis}
+                  "concat_axis": self.concat_axis,
+                  "dot_axes": self.dot_axes}
         base_config = super(Merge, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
@@ -384,9 +482,7 @@ class Dropout(MaskedLayer):
         if self.p > 0.:
             retain_prob = 1. - self.p
             if train:
-                X *= self.srng.binomial(X.shape, p=retain_prob, dtype=theano.config.floatX)
-            else:
-                X *= retain_prob
+                X *= self.srng.binomial(X.shape, p=retain_prob, dtype=theano.config.floatX) / retain_prob
         return X
 
     def get_config(self):
@@ -771,7 +867,7 @@ class AutoEncoder(Layer):
 
     @property
     def input_shape(self):
-        self.encoder.previous.output_shape
+        return self.encoder.input_shape
 
     @property
     def output_shape(self):
@@ -870,3 +966,439 @@ class MaxoutDense(Layer):
                   "input_dim": self.input_dim}
         base_config = super(MaxoutDense, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
+
+
+class Lambda(Layer):
+
+    """Lambda layer for evaluating arbitrary function
+
+    Input shape
+    -----------
+    output_shape of previous layer
+
+    Output shape
+    ------------
+    Specified by output_shape argument
+
+    Arguments
+    ---------
+    function - The function to be evaluated. Takes one argument : output of previous layer
+    output_shape - Expected output shape from function. Could be a tuple or a function of the shape of the input
+    """
+
+    def __init__(self, function, output_shape=None, **kwargs):
+        super(Lambda, self).__init__(**kwargs)
+        py3 = sys.version_info[0] == 3
+        if py3:
+            self.function = marshal.dumps(function.__code__)
+        else:
+            self.function = marshal.dumps(function.func_code)
+        if output_shape is None:
+            self._output_shape = None
+        elif type(output_shape) in {tuple, list} :
+            self._output_shape = tuple(output_shape)
+        else:
+            if py3:
+                self._output_shape = marshal.dumps(output_shape.__code__)
+            else:
+                self._output_shape = marshal.dumps(output_shape.func_code)
+
+    @property
+    def output_shape(self):
+        if self._output_shape is None:
+            return self.input_shape
+        elif type(self._output_shape) == tuple:
+            return (self.input_shape[0], ) + self._output_shape
+        else:
+            output_shape_func = marshal.loads(self._output_shape)
+            output_shape_func = types.FunctionType(output_shape_func, globals())
+            shape = output_shape_func(self.previous.output_shape)
+            if type(shape) not in {list, tuple}:
+                raise Exception("output_shape function must return a tuple")
+            return tuple(shape)
+
+    def get_output(self, train=False):
+        func = marshal.loads(self.function)
+        func = types.FunctionType(func, globals())
+        if hasattr(self, 'previous'):
+            return func(self.previous.get_output(train))
+        else:
+            return func(self.input)
+
+
+class MaskedLambda(MaskedLayer, Lambda):
+    pass
+
+
+class LambdaMerge(Lambda):
+    """LambdaMerge layer for evaluating arbitrary function over multiple inputs
+
+    Input shape
+    -----------
+    None
+
+    Output shape
+    ------------
+    Specified by output_shape argument
+
+    Arguments
+    ---------
+    layers - Input layers. Similar to layers argument of Merge
+    function - The function to be evaluated. Takes one argument : list of outputs from input layers
+    output_shape - Expected output shape from function. Could be a tuple or a function of list of input shapes
+    """
+    def __init__(self, layers, function, output_shape=None):
+        if len(layers) < 2:
+            raise Exception("Please specify two or more input layers (or containers) to merge")
+        self.layers = layers
+        self.params = []
+        self.regularizers = []
+        self.constraints = []
+        self.updates = []
+        for l in self.layers:
+            params, regs, consts, updates = l.get_params()
+            self.regularizers += regs
+            self.updates += updates
+            # params and constraints have the same size
+            for p, c in zip(params, consts):
+                if p not in self.params:
+                    self.params.append(p)
+                    self.constraints.append(c)
+        py3 = sys.version_info[0] == 3
+        if py3:
+            self.function = marshal.dumps(function.__code__)
+        else:
+            self.function = marshal.dumps(function.func_code)
+        if output_shape is None:
+            self._output_shape = None
+        elif type(output_shape) in {tuple, list}:
+            self._output_shape = tuple(output_shape)
+        else:
+            if py3:
+                self._output_shape = marshal.dumps(output_shape.__code__)
+            else:
+                self._output_shape = marshal.dumps(output_shape.func_code)
+
+    @property
+    def output_shape(self):
+        input_shapes = [layer.output_shape for layer in self.layers]
+        if self._output_shape is None:
+            return input_shapes[0]
+        elif type(self._output_shape) == tuple:
+            return (input_shapes[0][0], ) + self._output_shape
+        else:
+            output_shape_func = marshal.loads(self._output_shape)
+            output_shape_func = types.FunctionType(output_shape_func, globals())
+            shape = output_shape_func(input_shapes)
+            if type(shape) not in {list, tuple}:
+                raise Exception("output_shape function must return a tuple")
+            return tuple(shape)
+
+    def get_params(self):
+        return self.params, self.regularizers, self.constraints, self.updates
+
+    def get_output(self, train=False):
+        func = marshal.loads(self.function)
+        func = types.FunctionType(func, globals())
+        inputs = [layer.get_output(train) for layer in self.layers]
+        return func(inputs)
+
+    def get_input(self, train=False):
+        res = []
+        for i in range(len(self.layers)):
+            o = self.layers[i].get_input(train)
+            if not type(o) == list:
+                o = [o]
+            for output in o:
+                if output not in res:
+                    res.append(output)
+        return res
+
+    @property
+    def input(self):
+        return self.get_input()
+
+    def supports_masked_input(self):
+        return False
+
+    def get_output_mask(self, train=None):
+        return None
+
+    def get_weights(self):
+        weights = []
+        for l in self.layers:
+            weights += l.get_weights()
+        return weights
+
+    def set_weights(self, weights):
+        for i in range(len(self.layers)):
+            nb_param = len(self.layers[i].params)
+            self.layers[i].set_weights(weights[:nb_param])
+            weights = weights[nb_param:]
+
+    def get_config(self):
+        config = {"name": self.__class__.__name__,
+                  "layers": [l.get_config() for l in self.layers],
+                  "function": self.function,
+                  "output_shape": self._output_shape
+                  }
+        base_config = super(LambdaMerge, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class Siamese(Layer):
+
+    '''Shared layer with multiple inputs
+
+    Output shape
+    ------------
+    Depends on merge_mode argument
+
+    Arguments
+    ---------
+    layer - The layer to be shared across multiple inputs
+    inputs - inputs to the shared layer
+    merge_mode - Similar to mode argument of Merge layer
+    concat_axis - Similar to concat_axis argument of Merge layer
+    dot_axes - Similar to dot_axes argument of Merge layer
+    '''
+
+    def __init__(self, layer, inputs, merge_mode='concat', concat_axis=1, dot_axes=-1):
+
+        if merge_mode not in ['sum', 'mul', 'concat', 'ave', 'join', 'cos', 'dot', None]:
+            raise Exception("Invalid merge mode: " + str(mode))
+
+        if merge_mode in {'cos', 'dot'}:
+            if len(inputs) > 2:
+                raise Exception(mode + " merge takes exactly 2 layers")
+
+        self.layer = layer
+        self.inputs = inputs
+        self.params = []
+        self.merge_mode = merge_mode
+        self.concat_axis = concat_axis
+        self.dot_axes = dot_axes
+        layer.set_previous(inputs[0])
+        self.regularizers = []
+        self.constraints = []
+        self.updates = []
+        layers = [layer]
+        if merge_mode:
+            layers += inputs
+        for l in layers:
+            params, regs, consts, updates = l.get_params()
+            self.regularizers += regs
+            self.updates += updates
+            # params and constraints have the same size
+            for p, c in zip(params, consts):
+                if p not in self.params:
+                    self.params.append(p)
+                    self.constraints.append(c)
+
+    @property
+    def output_shape(self):
+        if merge_mode is None:
+            return self.layer.output_shape
+        input_shapes = [self.get_output_shape(i) for i in range(len(inputs))]
+        if self.merge_mode in ['sum', 'mul', 'ave']:
+            return input_shapes[0]
+        elif self.merge_mode == 'concat':
+            output_shape = list(input_shapes[0])
+            for shape in input_shapes[1:]:
+                output_shape[self.concat_axis] += shape[self.concat_axis]
+            return tuple(output_shape)
+        elif self.merge_mode == 'join':
+            return None
+        elif self.merge_mode == 'dot':
+            shape1 = list(input_shapes[0])
+            shape2 = list(input_shapes[1])
+            for i in self.dot_axes[0]:
+                shape1.pop(i)
+            for i in self.dot_axes[1]:
+                shape2.pop(i)
+            shape = shape1 + shape2[1:]
+            if len(shape) == 1:
+                shape.append(1)
+            return tuple(shape)
+        elif self.merge_mode == 'cos':
+            return tuple(input_shapes[0][0], 1)
+
+    def get_params(self):
+        return self.params, self.regularizers, self.constraints, self.updates
+
+    def set_layer_input(self, index):
+        l = self.layer
+        while not hasattr(l, 'previous'):
+            l = l.layers[0]
+        l.previous = self.inputs[index]
+
+    def get_output_at(self, head, train=False):
+        self.set_layer_input(head)
+        return self.layer.get_output(train)
+
+    def get_output_shape(self, head, train=False):
+        self.set_layer_input(head)
+        return self.layer.output_shape
+
+    def get_output_join(self, train=False):
+        o = OrderedDict()
+        for i in range(len(inputs)):
+            X = self.get_output_at(i, train)
+            if X.name is None:
+                raise ValueError("merge_mode='join' only works with named inputs")
+            o[X.name] = X
+        return o
+
+    def get_output_sum(self, train=False):
+        s = self.get_output_at(0, train)
+        for i in range(1, len(self.inputs)):
+            s += self.get_output_at(i, train)
+        return s
+
+    def get_output_ave(self, train=False):
+        n = len(self.inputs)
+        s = self.get_output_at(0, train)
+        for i in range(1, n):
+            s += self.get_output_at(i, train)
+        s /= n
+        return s
+
+    def get_output_concat(self, train=False):
+        inputs = [self.get_output_at(i, train) for i in range(len(self.inputs))]
+        return T.concatenate(inputs, axis=self.concat_axis)
+
+    def get_output_mul(self, train=False):
+        s = self.get_output_at(0, train)
+        for i in range(1, len(self.inputs)):
+            s *= self.get_output_at(i, train)
+        return s
+
+    def get_output_dot(self, train=False):
+        l1 = self.get_output_at(0, train)
+        l2 = self.get_output_at(1, train)
+        output = T.batched_tensordot(l1, l2, self.dot_axes)
+        output = output.dimshuffle((0, 'x'))
+        return output
+
+    def get_output_cos(self, train=False):
+        l1 = self.get_output_at(0, train)
+        l2 = self.get_output_at(1, train)
+        output, _ = theano.scan(lambda v1, v2: T.dot(v1, v2)/T.sqrt(T.dot(v1, v1) * T.dot(v2, v2)), sequences=[l1, l2], outputs_info=None)
+        output = output.dimshuffle((0, 'x'))
+        return output
+
+    def get_output(self, train=False):
+        mode = self.merge_mode
+        if mode == 'join':
+            return self.get_output_join(train)
+        elif mode == 'concat':
+            return self.get_output_concat(train)
+        elif mode == 'sum':
+            return self.get_output_sum(train)
+        elif mode == 'ave':
+            return self.get_output_ave(train)
+        elif mode == 'mul':
+            return self.get_output_mul(train)
+        elif mode == 'dot':
+            return self.get_output_dot(train)
+        elif mode == 'cos':
+            return self.get_output_dot(train)
+
+    def get_input(self, train=False):
+        res = []
+        for i in range(len(self.inputs)):
+            o = self.inputs[i].get_input(train)
+            if type(o) != list:
+                o = [o]
+            for output in o:
+                if output not in res:
+                    res.append(output)
+        return res
+
+    @property
+    def input(self):
+        return self.get_input()
+
+    def supports_masked_input(self):
+        return False
+
+    def get_output_mask(self, train=None):
+        return None
+
+    def get_weights(self):
+        weights = layer.get_weights()
+        if merge_mode:
+            for m in self.inputs:
+                weights += m.get_weights()
+        return weights
+
+    def set_weights(self, weights):
+        nb_param = len(self.layer.params)
+        self.layer.set_weights(weights[:nb_param])
+        weights = weights[nb_param:]
+        if merge_mode:
+            for i in range(len(self.inputs)):
+                nb_param = len(self.inputs[i].params)
+                self.inputs[i].set_weights(weights[:nb_param])
+                weights = weights[nb_param:]
+
+    def get_config(self):
+
+        config = {"name": self.__class__.__name__,
+                  "layer": self.layer.get_config,
+                  "inputs": [m.get_config() for m in self.inputs],
+                  "merge_mode": self.merge_mode,
+                  "concat_axis": self.concat_axis,
+                  "dot_axes": self.dot_axes
+                  }
+        base_config = super(Siamese, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+class SiameseHead(Layer):
+
+    '''This layer should be added only on top of a Siamese layer with merge_mode = None
+
+    Outputs the output of the Siamese layer at a given index, specified by the head argument
+
+    Arguments
+    ---------
+    head - The index at which the output of the Siamese layer should be obtained
+    '''
+    def __init__(self, head):
+        self.head = head
+        self.params = []
+
+    def get_output(self, train=False):
+        return self.get_input(train)
+
+    @property
+    def input_shape(self):
+        return self.previous.get_output_shape(self.head)
+
+    def get_input(self, train=False):
+        return self.previous.get_output_at(self.head, train)
+
+    def get_config(self):
+
+        config = {"name": self.__class__.__name__,
+                  "head": self.head
+                  }
+
+        base_config = super(SiameseHead, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    def set_previous(self, layer):
+        self.previous = layer
+
+
+def add_shared_layer(layer, inputs):
+    '''
+    Use this function to add a shared layer across multiple Sequential models without merging the outputs
+    '''
+    input_layers = [l.layers[-1] for l in inputs]
+    s = Siamese(layer, input_layers, merge_mode=None)
+    for i in range(len(inputs)):
+        sh = SiameseHead(i)
+        inputs[i].add(s)
+        inputs[i].add(sh)

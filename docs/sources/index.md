@@ -57,7 +57,7 @@ Once your model looks good, configure its learning process with `.compile()`:
 model.compile(loss='categorical_crossentropy', optimizer='sgd')
 ```
 
-If you need to, you can further configure your optimizer. A core principle of Keras is make things things reasonably simple, while allowing the user to be fully in control when they need to (the ultimate control being the easy extensibility of the source code).
+If you need to, you can further configure your optimizer. A core principle of Keras is to make things reasonably simple, while allowing the user to be fully in control when they need to (the ultimate control being the easy extensibility of the source code).
 ```python
 from keras.optimizers import SGD
 model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=0.01, momentum=0.9, nesterov=True))
@@ -98,6 +98,11 @@ Keras uses the following dependencies:
     - See [installation instructions](http://deeplearning.net/software/theano/install.html#install).
 - __HDF5__ and __h5py__ (optional, required if you use model saving/loading functions)
 - Optional but recommended if you use CNNs: __cuDNN__.
+
+**Note**: You should use the latest version of Theano, not the PyPI version. Install it with:
+```
+sudo pip install git+git://github.com/Theano/Theano.git
+```
 
 Once you have the dependencies installed, clone the repo:
 ```bash
