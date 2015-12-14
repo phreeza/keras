@@ -12,9 +12,8 @@ model = keras.models.Sequential()
             - __optimizer__: str (name of optimizer) or optimizer object. See [optimizers](optimizers.md).
             - __loss__: str (name of objective function) or objective function. See [objectives](objectives.md).
             - __class_mode__: one of "categorical", "binary". This is only used for computing classification accuracy or using the predict_classes method.
-            - __theano_mode__: A `theano.compile.mode.Mode` ([reference](http://deeplearning.net/software/theano/library/compile/mode.html)) instance controlling specifying compilation options.
     - __fit__(X, y, batch_size=128, nb_epoch=100, verbose=1, validation_split=0., validation_data=None, shuffle=True, show_accuracy=False, callbacks=[], class_weight=None, sample_weight=None): Train a model for a fixed number of epochs.
-        - __Return__: a history dictionary with a record of training loss values at successive epochs, as well as validation loss values (if applicable), accuracy (if applicable), etc.
+        - __Return__: a history object. It `history` attribute is a record of training loss values at successive epochs, as well as validation loss values (if applicable).
         - __Arguments__:
             - __X__: data.
             - __y__: labels.
@@ -128,6 +127,7 @@ model = keras.models.Graph()
     - __add_input__(name, input_shape, dtype='float'): Add an input with shape dimensionality `ndim`. 
         - __Arguments__:
             - __input_shape__: Integer tuple, shape of the expected input (not including the samples axis). E.g. (10,) for 10-dimensional vectors, (None, 128) for sequences (of variable length) of 128-dimensional vectors, (3, 32, 32) for 32x32 images with RGB channels.
+            - __batch_input_shape: Integer tuple, shape of the expected batch input (including the samples axis).
             - __dtype__: `float` or `int`. Type of the expected input data.
     - __add_output__(name, input=None, inputs=[], merge_mode='concat'): Add an output connect to `input` or `inputs`.
         - __Arguments__:
@@ -154,15 +154,15 @@ model = keras.models.Graph()
             - __optimizer__: str (name of optimizer) or optimizer object. See [optimizers](optimizers.md).
             - __loss__: dictionary mapping the name(s) of the output(s) to a loss function (string name of objective function or objective function. See [objectives](objectives.md)).
     - __fit__(data, batch_size=128, nb_epoch=100, verbose=1, validation_split=0., validation_data=None, shuffle=True, callbacks=[]): Train a model for a fixed number of epochs.
-        - __Return__: a history dictionary with a record of training loss values at successive epochs, as well as validation loss values (if applicable).
+        - __Return__: a history object. It `history` attribute is a record of training loss values at successive epochs, as well as validation loss values (if applicable).
         - __Arguments__:
-            - __data__:dictionary mapping input names out outputs names to appropriate numpy arrays. All arrays should contain the same number of samples.
+            - __data__: dictionary mapping input names and outputs names to appropriate numpy arrays. All arrays should contain the same number of samples.
             - __batch_size__: int. Number of samples per gradient update.
             - __nb_epoch__: int.
             - __verbose__: 0 for no logging to stdout, 1 for progress bar logging, 2 for one log line per epoch.
             - __callbacks__: `keras.callbacks.Callback` list. List of callbacks to apply during training. See [callbacks](callbacks.md).
             - __validation_split__: float (0. < x < 1). Fraction of the data to use as held-out validation data.
-            - __validation_data__: tuple (X, y) to be used as held-out validation data. Will override validation_split.
+            - __validation_data__: dictionary mapping input names and outputs names to appropriate numpy arrays to be used as held-out validation data. All arrays should contain the same number of samples. Will override validation_split.
             - __shuffle__: boolean. Whether to shuffle the samples at each epoch.
     - __evaluate__(data, batch_size=128, verbose=1): Show performance of the model over some validation data.
         - __Return__: The loss score over the data.
