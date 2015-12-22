@@ -100,6 +100,11 @@ def test_time_dist_merge():
     _runner(layer)
 
 
+def test_highway():
+    layer = core.Highway(input_shape=(10,))
+    _runner(layer)
+
+
 def test_autoencoder():
     layer_1 = core.Layer()
     layer_2 = core.Layer()
@@ -177,4 +182,3 @@ def _runner(layer):
 
 if __name__ == '__main__':
     pytest.main([__file__])
-
